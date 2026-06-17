@@ -20,6 +20,64 @@ Usage (once implemented):
 
 from tools import search_listings, suggest_outfit, create_fit_card
 
+import re
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """Extract description, size, and max_price using regex + string matching."""
+    working = query.strip()
+    size = None
+    max_price = None
+
+    price_patterns = [
+        r"under\s+\$(\d+(?:\.\d+)?)",
+        r"under\s+(\d+(?:\.\d+)?)",
+        r"less than\s+\$(\d+(?:\.\d+)?)",
+        r"less than\s+(\d+(?:\.\d+)?)",
+    ]
+    for pattern in price_patterns:
+        match = re.search(pattern, working, re.IGNORECASE)
+        if match:
+            max_price = float(match.group(1))
+            working = (working[: match.start()] + working[match.end() :]).strip()
+            break
+
+    size_patterns = [
+        r"size\s+([A-Za-z0-9]+(?:/\w+)?(?:\s*\([^)]*\))?)",
+        r"(?:,\s*)?in\s+(?:size\s+)?([A-Za-z0-9]+(?:/\w+)?)",
+    ]
+    for pattern in size_patterns:
+        match = re.search(pattern, working, re.IGNORECASE)
+        if match:
+            size = match.group(1).strip()
+            working = (working[: match.start()] + working[match.end() :]).strip()
+            break
+
+    description = re.sub(r"^[,\s]+|[,\s]+$", "", working)
+    description = re.sub(r"\s+", " ", description).strip()
+    description = re.sub(
+        r"^(?:looking for|i(?:'m| am) looking for|i want|find me|search for)\s+(?:a\s+)?",
+        "",
+        description,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
+
+
+def _no_results_message(description: str, size: str | None, max_price: float | None) -> str:
+    parts = [f"No listings found for '{description}'"]
+    if size:
+        parts.append(f"in size {size}")
+    if max_price is not None:
+        parts.append(f"under ${max_price:.2f}")
+    return (
+        " ".join(parts)
+        + ". Try removing the size filter, raising your budget, or using different keywords."
+    )
+
 
 # ── session state ─────────────────────────────────────────────────────────────
 
@@ -92,9 +150,38 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse query
+    session["parsed"] = _parse_query(query)
+    description = session["parsed"]["description"]
+    size = session["parsed"]["size"]
+    max_price = session["parsed"]["max_price"]
+
+    # Step 3: search listings
+    session["search_results"] = search_listings(description, size, max_price)
+    if not session["search_results"]:
+        session["error"] = _no_results_message(description, size, max_price)
+        return session
+
+    # Step 4: select top result
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5: suggest outfit
+    outfit_result = suggest_outfit(session["selected_item"], session["wardrobe"])
+    if outfit_result.startswith("Error:"):
+        session["error"] = outfit_result
+        return session
+    session["outfit_suggestion"] = outfit_result
+
+    # Step 6: create fit card
+    fit_card_result = create_fit_card(session["outfit_suggestion"], session["selected_item"])
+    if fit_card_result.startswith("Error:"):
+        session["error"] = fit_card_result
+        return session
+    session["fit_card"] = fit_card_result
+
+    # Step 7: return completed session
     return session
 
 
